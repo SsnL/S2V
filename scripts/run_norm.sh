@@ -2,13 +2,15 @@
 
 RESULTS_HOME="results/BC"
 MDL_CFGS="model_configs"
-GLOVE_PATH="dictionaries/Glove"
+GLOVE_PATH="dictionaries"
 
-DATA_DIR="TFRecords/BC_filter_empty"
-NUM_INST=52799513 # 45786400 # Number of sentences
+DATA_DIR="TFRecords/BC"
+NUM_INST=45786400 # Number of sentences
 
-# DATA_DIR="data/BC_UMBC/TFRecords"
-# NUM_INST=115425268 # 174817800
+#DATA_DIR="data/BC_UMBC/TFRecords"
+#NUM_INST=174817800
+
+#81148328
 
 INV_NORM="${INV_NORM}"
 CFG="BS400-W620-S1200-case-bidir"
@@ -38,13 +40,13 @@ python src/train.py \
     --Glove_path=$GLOVE_PATH \
     --model_config="$MDL_CFGS/$CFG/train.json"
 
-# export CUDA_VISIBLE_DEVICES="$EVAL_GPU"
-# python src/eval.py \
-#     --input_file_pattern="$DATA_DIR/validation-?????-of-00001" \
-#     --checkpoint_dir="$RESULTS_HOME/$FOLDER/train" \
-#     --eval_dir="$RESULTS_HOME/$FOLDER/eval" \
-#     --batch_size=$BS \
-#     --model_config="$MDL_CFGS/$CFG/train.json" \
-#     --eval_interval_secs=1800 \
-#     --sequence_length=$SEQ_LEN
+export CUDA_VISIBLE_DEVICES="$EVAL_GPU"
+python src/eval.py \
+    --input_file_pattern="$DATA_DIR/validation-?????-of-00001" \
+    --checkpoint_dir="$RESULTS_HOME/$FOLDER/train" \
+    --eval_dir="$RESULTS_HOME/$FOLDER/eval" \
+    --batch_size=$BS \
+    --model_config="$MDL_CFGS/$CFG/train.json" \
+    --eval_interval_secs=1800 \
+    --sequence_length=$SEQ_LEN
 }

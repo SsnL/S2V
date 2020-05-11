@@ -141,7 +141,7 @@ class s2v_encoder(object):
 
     return _restore_fn
 
-  def build_graph_from_config(self, model_config): #, checkpoint_path):
+  def build_graph_from_config(self, model_config, mode="encoder"): #, checkpoint_path):
     """Builds the inference graph from a configuration object.
 
     Args:
@@ -154,7 +154,7 @@ class s2v_encoder(object):
         from the checkpoint file.
     """
     tf.logging.info("Building model.")
-    model = s2v_model.s2v(model_config, mode="encode")
+    model = s2v_model.s2v(model_config, mode=mode)
     model.build_enc()
     self._embeddings = model.word_embeddings
     saver = tf.train.Saver()
@@ -246,7 +246,7 @@ class s2v_encoder(object):
     Returns:
       thought_vectors: A list of numpy arrays corresponding to the skip-thought
         encodings of sentences in 'data'.
-    """ 
+    """
     thought_vectors = []
     feed_data = []
 

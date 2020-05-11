@@ -24,7 +24,8 @@ FLAGS = tf.flags.FLAGS
 
 class _HParams(object):
   """Wrapper for configuration parameters."""
-  pass
+  def __repr__(self):
+    return repr(vars(self))
 
 def vocab_config(vocab_config, mode):
   config = _HParams()
@@ -42,11 +43,25 @@ def vocab_config(vocab_config, mode):
     config.embs_file = os.path.join(FLAGS.results_path, vocab_config['embs_file'])
   return config
 
+def loss_config(loss_config):
+  config = _HParams()
+  config.c = loss_config.get('c', 1)
+  config.ct = loss_config.get('ct', 1)
+  config.u = loss_config.get('u', 0)
+  config.ut = loss_config.get('ut', 2)
+  config.a = loss_config.get('a', 0)
+  config.aa = loss_config.get('aa', 2)
+  config._repr = f"c{config.c:g}t{config.ct:g}_a{config.a:g}a{config.aa:g}_u{config.u:g}t{config.ut:g}"
+  assert set(loss_config.keys()).issubset(set(vars(config).keys()))
+  return config
+
 def model_config(mdl_config, mode):
 
   config = _HParams()
   config.encoder = mdl_config['encoder']
   config.encoder_dim = mdl_config['encoder_dim']
+  config.encoder_norm = mdl_config.get('encoder_norm', False)
+  config.loss_config = loss_config(mdl_config.get('loss_config', {}))
   config.bidir = mdl_config['bidir']
   if mdl_config['checkpoint_path']:
     config.checkpoint_path = os.path.join(FLAGS.results_path, mdl_config['checkpoint_path'])

@@ -41,11 +41,12 @@ FLAGS = tf.flags.FLAGS
 class EncoderManager(object):
   """Manager class for loading and encoding with skip-thoughts models."""
 
-  def __init__(self):
+  def __init__(self, allow_growth=False):
     self.encoders = []
     self.sessions = []
+    self.allow_growth = allow_growth
 
-  def load_model(self, model_config):
+  def load_model(self, model_config, mode="encode"):
     """Loads a skip-thoughts model.
 
     Args:
@@ -62,9 +63,14 @@ class EncoderManager(object):
     g = tf.Graph()
     with g.as_default():
       encoder = s2v_encoder.s2v_encoder(model_config)
-      restore_model = encoder.build_graph_from_config(model_config)
+      restore_model = encoder.build_graph_from_config(model_config, mode=mode)
 
-    sess = tf.Session(graph=g)
+    if self.allow_growth:
+      config = tf.ConfigProto()
+      config.gpu_options.allow_growth=True
+      sess = tf.Session(graph=g, config=config)
+    else:
+      sess = tf.Session(graph=g)
 
     restore_model(sess)
 

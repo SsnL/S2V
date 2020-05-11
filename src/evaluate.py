@@ -22,6 +22,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
+import re
+import warnings
+
 import eval_classification
 import eval_msrp
 import eval_sick
@@ -29,6 +33,7 @@ import eval_trec
 
 import tensorflow as tf
 import numpy as np
+import torch
 
 import configuration
 import encoder_manager
@@ -40,6 +45,7 @@ FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_string("eval_task", "MSRP",
                        "Name of the evaluation task to run. Available tasks: "
                        "MR, CR, SUBJ, MPQA, SICK, MSRP, TREC.")
+tf.flags.DEFINE_string("eval_dir", None, "Directory to write results to.")
 tf.flags.DEFINE_string("data_dir", None, "Directory containing training data.")
 tf.flags.DEFINE_float("uniform_init_scale", 0.1, "Random init scale")
 tf.flags.DEFINE_integer("batch_size", 400, "Batch size")
@@ -53,39 +59,67 @@ tf.flags.DEFINE_string("Glove_path", None, "Path to Glove dictionary")
 tf.logging.set_verbosity(tf.logging.INFO)
 
 def main(unused_argv):
+  os.makedirs(FLAGS.eval_dir, exist_ok=True)
+
+  if not os.path.exists(os.path.join(FLAGS.eval_dir, '../train/model.ckpt-131998.data-00000-of-00001')):
+    print('ABORT: INF_OR_NAN\n\n\n\n\n')
+    return
+
   if not FLAGS.data_dir:
     raise ValueError("--data_dir is required.")
   if not FLAGS.model_config:
     raise ValueError("--model_config is required.")
 
-  encoder = encoder_manager.EncoderManager()
+  encoder = encoder_manager.EncoderManager(allow_growth=True)
 
   with open(FLAGS.model_config) as json_config_file:
-    model_config = json.load(json_config_file)
+    json_model_configs = json.load(json_config_file)
 
-  if type(model_config) is dict:
-    model_config = [model_config]
+  if type(json_model_configs) is dict:
+    json_model_configs = [json_model_configs]
 
-  for mdl_cfg in model_config:
-    model_config = configuration.model_config(mdl_cfg, mode="encode")
+  for json_mdl_cfg in json_model_configs:
+    model_config = configuration.model_config(json_mdl_cfg, mode="encode")
     encoder.load_model(model_config)
 
-  if FLAGS.eval_task in ["MR", "CR", "SUBJ", "MPQA"]:
-    results = eval_classification.eval_nested_kfold(
-        encoder, FLAGS.eval_task, FLAGS.data_dir, use_nb=False)
-    scores = results[0]
-    print('Mean score', np.mean(scores))
-  elif FLAGS.eval_task == "SICK":
-    results = eval_sick.evaluate(encoder, evaltest=True, loc=FLAGS.data_dir)
-  elif FLAGS.eval_task == "MSRP":
-    results = eval_msrp.evaluate(
-        encoder, evalcv=True, evaltest=True, use_feats=False, loc=FLAGS.data_dir)
-  elif FLAGS.eval_task == "TREC":
-    eval_trec.evaluate(encoder, evalcv=True, evaltest=True, loc=FLAGS.data_dir)
-  else:
-    raise ValueError("Unrecognized eval_task: %s" % FLAGS.eval_task)
+  eval_tasks = [t for t in re.split(r'_|\+', FLAGS.eval_task) if len(t) > 0]
 
+  save_results_file = os.path.join(FLAGS.eval_dir, 'eval_results_new.pth')
+  if os.path.exists(save_results_file):
+    eval_results = torch.load(save_results_file)
+  else:
+    eval_results = {}
+
+  for eval_task in eval_tasks:
+    print(f"\n\n\nrunning {eval_task}...\n")
+    if eval_task in eval_results:
+      warnings.warn(f"{eval_task} already exists, skip: current keys = {eval_results.keys()}")
+      # if not isinstance(eval_results[eval_task], dict):
+      continue
+
+    if eval_task in ["MR", "CR", "SUBJ", "MPQA"]:
+      data_dir = os.path.join(FLAGS.data_dir, eval_task)
+      results = eval_classification.eval_nested_kfold(
+          encoder, eval_task, data_dir, use_nb=False, just_one=True)
+      assert len(results['train']) == len(results['test']) == 1
+      print('Train score', np.mean(results['train']))
+      print('Test score', np.mean(results['test']))
+      results = dict(train= np.mean(results['train']), test=np.mean(results['test']))
+    elif eval_task == "SICK":
+      results = eval_sick.evaluate(encoder, evaltest=True, loc=data_dir)
+    elif eval_task == "MSRP":
+      results = eval_msrp.evaluate(
+          encoder, evalcv=True, evaltest=True, use_feats=False, loc=data_dir)
+    elif eval_task == "TREC":
+      eval_trec.evaluate(encoder, evalcv=True, evaltest=True, loc=data_dir)
+    else:
+      raise ValueError("Unrecognized eval_task: %s" % eval_task)
+
+    eval_results[eval_task] = results
   encoder.close()
+
+  torch.save(eval_results, save_results_file)
+  print(f'saved to {save_results_file}\n\n\n\n')
 
 if __name__ == "__main__":
   tf.app.run()

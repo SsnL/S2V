@@ -99,7 +99,9 @@ def _build_vocabulary(input_files):
     vocab = collections.OrderedDict()
     with tf.gfile.GFile(FLAGS.vocab_file, mode="r") as f:
       for i, line in enumerate(f):
-        word = line.decode("utf-8").strip()
+        if isinstance(line, bytes):
+          line = line.decode("utf-8")
+        word = line.strip()
         if word in vocab:
           print('Duplicate word:', word)
         #assert word not in vocab, "Attempting to add word twice: %s" % word
@@ -189,18 +191,21 @@ def _process_input_file(filename, vocab, stats):
   Returns:
     processed: A list of serialized Example protos
   """
-  
+
   tf.logging.info("Processing input file: %s", filename)
   processed = []
 
   for sentence_str in tf.gfile.FastGFile(filename):
     sentence_tokens = sentence_str.split()
 
-    sentence_tokens = sentence_tokens[:FLAGS.max_sentence_length]
+    if len(sentence_tokens) == 0:
+      stats.update(['empty_sentences'])
+    else:
+      sentence_tokens = sentence_tokens[:FLAGS.max_sentence_length]
 
-    serialized = _create_serialized_example(sentence_tokens, vocab)
-    processed.append(serialized)
-    stats.update(["sentence_count"])
+      serialized = _create_serialized_example(sentence_tokens, vocab)
+      processed.append(serialized)
+      stats.update(["sentence_count"])
 
   tf.logging.info("Completed processing file %s", filename)
   return processed
@@ -262,8 +267,9 @@ def main(unused_argv):
       break
 
   tf.logging.info("Generated dataset with %d sentences.", len(dataset))
-  #for k, v in stats.items():
-  #  tf.logging.info("%s: %d", k, v)
+  for k, v in stats.items():
+      print(f"{k}:\t{v}")
+  print('\n\n\n\n')
 
   #tf.logging.info("Shuffling dataset.")
   #np.random.seed(123)

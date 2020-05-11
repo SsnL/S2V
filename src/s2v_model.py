@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+import sys
 
 import tensorflow as tf
 import numpy as np
@@ -25,8 +26,8 @@ def read_vocab_embs(vocabulary_file, embedding_matrix_file):
   tf.logging.info("Reading vocabulary from %s", vocabulary_file)
   with tf.gfile.GFile(vocabulary_file, mode="r") as f:
     lines = list(f.readlines())
-  vocab = [line.decode("utf-8").strip() for line in lines]
-  
+  vocab = [line.strip() for line in lines]
+
   with open(embedding_matrix_file, "r") as f:
     embedding_matrix = np.load(f)
   tf.logging.info("Loaded embedding matrix with shape %s",
@@ -39,16 +40,16 @@ def read_vocab(vocabulary_file):
   tf.logging.info("Reading vocabulary from %s", vocabulary_file)
   with tf.gfile.GFile(vocabulary_file, mode="r") as f:
     lines = list(f.readlines())
-  reverse_vocab = [line.decode("utf-8").strip() for line in lines]
+  reverse_vocab = [line.strip() for line in lines]
   tf.logging.info("Loaded vocabulary with %d words.", len(reverse_vocab))
- 
+
   #tf.logging.info("Loading embedding matrix from %s", embedding_matrix_file)
   # Note: tf.gfile.GFile doesn't work here because np.load() calls f.seek()
   # with 3 arguments.
   word_embedding_dict = collections.OrderedDict(
       zip(reverse_vocab, range(len(reverse_vocab))))
   return word_embedding_dict
-    
+
 
 class s2v(object):
   """Skip-thoughts model."""
@@ -117,8 +118,8 @@ class s2v(object):
       serialized = input_queue.dequeue_many(FLAGS.batch_size)
       encode = input_ops.parse_example_batch(serialized)
 
-      encode_ids = encode.ids
-      encode_mask = encode.mask
+      encode_ids = tf.identity(encode.ids, name="encode_ids")
+      encode_mask = tf.identity(encode.mask, name="encode_mask")
 
     self.encode_ids = encode_ids
     self.encode_mask = encode_mask
@@ -147,7 +148,6 @@ class s2v(object):
           assert(load_vocab_size == v.size - 1)
           word_init = np.concatenate((rand, word_vecs), axis=0)
           self.init = (embedding_init, embedding_placeholder, word_init)
-        
         else:
           word_emb = tf.get_variable(
               name=v.name,
@@ -245,18 +245,24 @@ class s2v(object):
     """
     names = ["","_out"]
     self.thought_vectors = []
-    print(self.config.encoder)
+    # print(self.config.encoder)
+    # encode_emb = tf.compat.v1.Print(self.encode_emb, [tf.shape(self.encode_emb)], "encode_emb shape: ")
+    encode_emb = self.encode_emb
     for i in range(2):
       with tf.variable_scope("encoder" + names[i]) as scope:
-        
+
         if self.config.encoder == "gru":
-          sent_rep = self.rnn(self.encode_emb[i], self.encode_mask, scope, self.config.encoder_dim, cell_type="GRU")
+          sent_rep = self.rnn(encode_emb[i], self.encode_mask, scope, self.config.encoder_dim, cell_type="GRU")
         elif self.config.encoder == "lstm":
-          sent_rep = self.rnn(self.encode_emb[i], self.encode_mask, scope, self.config.encoder_dim, cell_type="LSTM")
+          sent_rep = self.rnn(encode_emb[i], self.encode_mask, scope, self.config.encoder_dim, cell_type="LSTM")
         elif self.config.encoder == 'bow':
-          sent_rep = self.bow(self.encode_emb[i], self.encode_mask)
+          sent_rep = self.bow(encode_emb[i], self.encode_mask)
         else:
           raise ValueError("Invalid encoder")
+
+        if self.config.encoder_norm:
+          # sent_rep = tf.compat.v1.Print(sent_rep, [tf.shape(sent_rep)], "sent_rep shape: ")
+          sent_rep = tf.nn.l2_normalize(sent_rep, axis=1)
 
         thought_vectors = tf.identity(sent_rep, name="thought_vectors")
         self.thought_vectors.append(thought_vectors)
@@ -269,61 +275,125 @@ class s2v(object):
       self.total_loss
     """
 
+    loss_config = self.config.loss_config
     all_sen_embs = self.thought_vectors
-  
+
+    losses = []
+    to_log = {}
+
+    print(self.config)
+    print(loss_config)
+
+    # Positive pair targets
+    # diag = all zeros
+    pos_targets_np = np.zeros((FLAGS.batch_size, FLAGS.batch_size))
+    ctxt_sent_pos = list(range(-FLAGS.context_size, FLAGS.context_size + 1))
+    ctxt_sent_pos.remove(0)
+    for ctxt_pos in ctxt_sent_pos:
+      pos_targets_np += np.eye(FLAGS.batch_size, k=ctxt_pos)
+
+    pos_targets_np_sum = np.sum(pos_targets_np, axis=1, keepdims=True)
+    pos_targets_np = pos_targets_np / pos_targets_np_sum
+
+    # matmul scores
     if FLAGS.dropout:
       mask_shp = [1, self.config.encoder_dim]
       bin_mask = tf.random_uniform(mask_shp) > FLAGS.dropout_rate
       bin_mask = tf.where(bin_mask, tf.ones(mask_shp), tf.zeros(mask_shp))
       src = all_sen_embs[0] * bin_mask
       dst = all_sen_embs[1] * bin_mask
-      scores = tf.matmul(src, dst, transpose_b=True)
+      mm_scores = tf.matmul(src, dst, transpose_b=True)
     else:
-      scores = tf.matmul(all_sen_embs[0], all_sen_embs[1], transpose_b=True)
+      mm_scores = tf.matmul(all_sen_embs[0], all_sen_embs[1], transpose_b=True)
 
-    # Ignore source sentence
-    scores = tf.matrix_set_diag(scores, np.zeros(FLAGS.batch_size))
+    if loss_config.c != 0:
 
-    # Targets
-    targets_np = np.zeros((FLAGS.batch_size, FLAGS.batch_size))
-    ctxt_sent_pos = range(-FLAGS.context_size, FLAGS.context_size + 1)
-    ctxt_sent_pos.remove(0)
-    for ctxt_pos in ctxt_sent_pos:
-      targets_np += np.eye(FLAGS.batch_size, k=ctxt_pos)
+      c_scores = mm_scores / loss_config.ct
 
-    targets_np_sum = np.sum(targets_np, axis=1, keepdims=True)
-    targets_np = targets_np/targets_np_sum
-    targets = tf.constant(targets_np, dtype=tf.float32)
+      # Ignore source sentence
+      if self.config.encoder_norm:
+        nodiag_mask_np = np.ones((FLAGS.batch_size, FLAGS.batch_size), dtype=np.bool)
+        np.fill_diagonal(nodiag_mask_np, False)
+        nodiag_pos_targets_np = pos_targets_np[nodiag_mask_np].reshape(FLAGS.batch_size, FLAGS.batch_size - 1)
+        pos_targets = tf.constant(nodiag_pos_targets_np, dtype=tf.float32)  # still normalized since diag(pos_targets_np) = 0
 
-    # Forward and backward scores    
-    f_scores = scores[:-1] 
-    b_scores = scores[1:]
+        nodiag_mask = tf.constant(nodiag_mask_np)
+        c_scores = tf.reshape(c_scores[nodiag_mask], [FLAGS.batch_size, FLAGS.batch_size - 1])
+      else:
+        pos_targets = tf.constant(pos_targets_np, dtype=tf.float32)
+        c_scores = tf.matrix_set_diag(c_scores, np.zeros(FLAGS.batch_size))
 
-    losses = tf.nn.softmax_cross_entropy_with_logits(
-        labels=targets, logits=scores)
-  
-    loss = tf.reduce_mean(losses)
+      c_losses = tf.nn.softmax_cross_entropy_with_logits(
+          labels=pos_targets, logits=c_scores)
 
-    tf.summary.scalar("losses/ent_loss", loss)
-    self.total_loss = loss
+      to_log['c_loss'] = c_loss = tf.reduce_mean(c_losses)
+      losses.append(c_loss * loss_config.c)
+
+    if loss_config.u != 0:
+      assert self.config.encoder_norm
+
+      # tril indicies
+      mask_np = np.zeros((FLAGS.batch_size, FLAGS.batch_size), dtype=np.bool)
+      mask_np[np.tril_indices(FLAGS.batch_size, -1)] = True
+      mask = tf.constant(mask_np)
+
+      f_sen = all_sen_embs[0]
+      f_scores = tf.matmul(f_sen, f_sen, transpose_b=True)
+      uf_loss = tf.log(tf.reduce_mean( tf.exp( (f_scores[mask] - 1) * (2 * loss_config.ut) )))
+
+      g_sen = all_sen_embs[1]
+      g_scores = tf.matmul(g_sen, g_sen, transpose_b=True)
+      ug_loss = tf.log(tf.reduce_mean( tf.exp( (g_scores[mask] - 1) * (2 * loss_config.ut) )))
+
+      to_log['uf_loss'] = uf_loss
+      to_log['ug_loss'] = ug_loss
+      losses.append((uf_loss + ug_loss) * loss_config.u)
+
+    if loss_config.a != 0:
+      assert self.config.encoder_norm
+
+      pos_targets_norm_np = pos_targets_np / pos_targets_np.sum()
+      pos_targets_norm = tf.constant(pos_targets_norm_np, dtype=tf.float32)
+
+      dist_metric = 2 - 2 * mm_scores
+      if loss_config.aa != 2:
+        # eps = 1e-7
+        # dist_metric = (dist_metric + eps) ** (loss_config.aa / 2)
+        dist_metric = dist_metric ** (loss_config.aa / 2)
+
+      to_log['a_loss'] = a_loss = tf.reduce_sum(dist_metric * pos_targets_norm)
+      losses.append(a_loss * loss_config.a)
+
+    print_op = tf.print(f"losses {loss_config._repr}:", to_log, output_stream=sys.stderr)
+    with tf.control_dependencies([print_op]):
+      self.total_loss = tf.add_n(losses)
+
+    # self.total_loss = tf.add_n(losses)
+
+    # tf.summary.scalar("losses/ent_loss", loss)
+    # self.total_loss = loss
 
     if self.mode == "eval":
+      # Forward and backward scores
+      f_scores = scores[:-1]
+      b_scores = scores[1:]
+
       f_max = tf.to_int64(tf.argmax(f_scores, axis=1))
       b_max = tf.to_int64(tf.argmax(b_scores, axis=1))
 
-      targets = range(FLAGS.batch_size - 1)
+      targets = list(range(FLAGS.batch_size - 1))
       targets = tf.constant(targets, dtype=tf.int64)
       fwd_targets = targets + 1
 
       names_to_values, names_to_updates = tf.contrib.slim.metrics.aggregate_metric_map({
-        "Acc/Fwd Acc": tf.contrib.slim.metrics.streaming_accuracy(f_max, fwd_targets), 
+        "Acc/Fwd Acc": tf.contrib.slim.metrics.streaming_accuracy(f_max, fwd_targets),
         "Acc/Bwd Acc": tf.contrib.slim.metrics.streaming_accuracy(b_max, targets)
       })
 
-      for name, value in names_to_values.iteritems():
+      for name, value in names_to_values.items():
         tf.summary.scalar(name, value)
 
-      self.eval_op = names_to_updates.values()
+      self.eval_op = list(names_to_updates.values())
 
   def build(self):
     """Creates all ops for training, evaluation or encoding."""

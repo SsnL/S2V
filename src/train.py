@@ -45,6 +45,7 @@ tf.flags.DEFINE_integer("num_train_inst", 45786400, "Number of training instance
 tf.flags.DEFINE_integer("sequence_length", 30, "Max sentence length considered")
 tf.flags.DEFINE_integer("context_size", 1, "Prediction context size")
 tf.flags.DEFINE_boolean("dropout", False, "Use dropout")
+tf.flags.DEFINE_boolean("allow_growth", False, "Allow GPU growth")
 tf.flags.DEFINE_float("dropout_rate", 0.3, "Dropout rate")
 tf.flags.DEFINE_string("model_config", None, "Model configuration json")
 tf.flags.DEFINE_integer("max_ckpts", 5, "Max number of ckpts to keep")
@@ -63,6 +64,7 @@ def main(unused_argv):
 
   model_config = configuration.model_config(model_config, mode="train")
   tf.logging.info("Building training graph.")
+
   g = tf.Graph()
   with g.as_default():
     model = s2v_model.s2v(model_config, mode="train")
@@ -86,16 +88,24 @@ def main(unused_argv):
     def InitAssignFn(sess):
       sess.run(load_words[0], {load_words[1]: load_words[2]})
 
+  if FLAGS.allow_growth:
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth=True
+  else:
+    config = None
+
   nsteps = int(FLAGS.nepochs * (FLAGS.num_train_inst / FLAGS.batch_size))
   tf.contrib.slim.learning.train(
       train_op=train_tensor,
       logdir=FLAGS.train_dir,
       graph=g,
       number_of_steps=nsteps,
+      log_every_n_steps=100,
       save_summaries_secs=FLAGS.save_summaries_secs,
       saver=saver,
-      save_interval_secs=FLAGS.save_model_secs, 
-      init_fn=InitAssignFn if load_words else None
+      save_interval_secs=FLAGS.save_model_secs,
+      init_fn=InitAssignFn if load_words else None,
+      session_config=config,
   )
 
 if __name__ == "__main__":
